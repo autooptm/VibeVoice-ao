@@ -1,0 +1,142 @@
+diff --git a/finetuning-asr/lora_finetune.py b/finetuning-asr/lora_finetune.py
+index 0c4f9c9..9c6fdd8 100644
+--- a/finetuning-asr/lora_finetune.py
++++ b/finetuning-asr/lora_finetune.py
+@@ -8,6 +8,7 @@ It uses PEFT (Parameter-Efficient Fine-Tuning) library for efficient training.
+ 
+ import json
+ import logging
++import os
+ from pathlib import Path
+ from typing import List, Dict, Any, Optional, Tuple
+ from dataclasses import dataclass, field
+@@ -433,7 +434,16 @@ def setup_model_for_training(
+     if gradient_checkpointing:
+         model.enable_input_require_grads()
+         model.gradient_checkpointing_enable()
+-    
++
++    if os.environ.get("AO_OPT_1", "1") == "1":
++        try:
++            from transformers.models.qwen2 import modeling_qwen2 as _ao_qwen2
++            _ao_qwen2.Qwen2DecoderLayer.forward = torch.compile(
++                _ao_qwen2.Qwen2DecoderLayer.forward)
++            logger.info("[autooptm] optimized Qwen2DecoderLayer.forward")
++        except Exception as exc:
++            logger.warning(f"[autooptm] block optimization unavailable, using the stock path: {exc}")
++
+     return model, processor
+ 
+ 
+@@ -497,7 +507,11 @@ def train(
+     )
+     
+     # Set some sensible defaults for audio training
+-    training_args.dataloader_num_workers = 0  # Audio loading can be tricky with multiprocessing
++    _ao_opt_5 = int(os.environ.get("AO_OPT_2", "2"))
++    training_args.dataloader_num_workers = _ao_opt_5
++    if _ao_opt_5 > 0:
++        training_args.dataloader_prefetch_factor = 2
++        training_args.dataloader_persistent_workers = True
+     training_args.remove_unused_columns = False  # Keep all columns
+     
+     # Create trainer
+diff --git a/vibevoice/modular/modeling_vibevoice_asr.py b/vibevoice/modular/modeling_vibevoice_asr.py
+index cb8559f..420e3b4 100644
+--- a/vibevoice/modular/modeling_vibevoice_asr.py
++++ b/vibevoice/modular/modeling_vibevoice_asr.py
+@@ -1,5 +1,6 @@
+ from typing import Callable, List, Optional, Tuple, Union
+ import math
++import os
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+@@ -398,20 +399,26 @@ class VibeVoiceASRForConditionalGeneration(VibeVoiceASRPreTrainedModel, Generati
+         )
+ 
+         hidden_states = outputs[0] if not return_dict else outputs.last_hidden_state
+-        logits = self.lm_head(hidden_states)
+ 
+         loss = None
+         if labels is not None:
+-            # Shift so that tokens < n predict n
+-            shift_logits = logits[..., :-1, :].contiguous()
+-            shift_labels = labels[..., 1:].contiguous()
+-            # Flatten the tokens
++            shift_labels = labels[..., 1:]
+             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+-            shift_logits = shift_logits.view(-1, self.vocab_size)
+-            shift_labels = shift_labels.view(-1)
+-            # Enable model parallelism
+-            shift_labels = shift_labels.to(shift_logits.device)
+-            loss = loss_fct(shift_logits, shift_labels)
++            if os.environ.get("AO_OPT_3", "0") == "1":
++                logits = self.lm_head(hidden_states)
++                shift_logits = logits[..., :-1, :].contiguous()
++                shift_labels = shift_labels.contiguous()
++                shift_logits = shift_logits.view(-1, self.vocab_size)
++                shift_labels = shift_labels.view(-1)
++                shift_labels = shift_labels.to(shift_logits.device)
++                loss = loss_fct(shift_logits, shift_labels)
++            else:
++                keep = shift_labels != -100
++                logits = self.lm_head(hidden_states[..., :-1, :][keep])
++                loss = loss_fct(logits.view(-1, self.vocab_size),
++                                shift_labels[keep].view(-1).to(logits.device))
++        else:
++            logits = self.lm_head(hidden_states)
+ 
+         if not return_dict:
+             output = (logits,) + outputs[1:]
+diff --git a/vibevoice/processor/vibevoice_asr_processor.py b/vibevoice/processor/vibevoice_asr_processor.py
+index 0ffa666..0d5b5f4 100644
+--- a/vibevoice/processor/vibevoice_asr_processor.py
++++ b/vibevoice/processor/vibevoice_asr_processor.py
+@@ -296,6 +296,9 @@ class VibeVoiceASRProcessor:
+         
+         return batch_encoding
+     
++    _ao_opt_6 = {}
++    _ao_opt_7 = 0
++
+     def _process_single_audio(
+         self,
+         audio: Union[str, np.ndarray, torch.Tensor],
+@@ -316,6 +319,15 @@ class VibeVoiceASRProcessor:
+         Returns:
+             Dictionary with processed tokens and audio features
+         """
++        _ao_cap = int(os.environ.get("AO_OPT_4", "2048")) * 1024 * 1024
++        _ao_key = None
++        if _ao_cap > 0 and isinstance(audio, str):
++            _ao_key = (audio, sampling_rate, add_generation_prompt, use_streaming,
++                       context_info)
++            _ao_hit = VibeVoiceASRProcessor._ao_opt_6.get(_ao_key)
++            if _ao_hit is not None:
++                return dict(_ao_hit)
++
+         # Process audio through audio processor
+         if isinstance(audio, str):
+             # Load from file using ffmpeg for better format support
+@@ -410,12 +422,19 @@ class VibeVoiceASRProcessor:
+         # Create acoustic input mask
+         acoustic_input_mask = [1 if token == self.speech_pad_id else 0 for token in full_tokens]
+         
+-        return {
++        encoding = {
+             "input_ids": full_tokens,
+             "acoustic_input_mask": acoustic_input_mask,
+             "speech": audio_array,
+             "vae_tok_len": vae_tok_len,
+         }
++        if _ao_key is not None:
++            _ao_n = int(getattr(audio_array, "nbytes", 0))
++            if VibeVoiceASRProcessor._ao_opt_7 + _ao_n <= _ao_cap:
++                VibeVoiceASRProcessor._ao_opt_6[_ao_key] = encoding
++                VibeVoiceASRProcessor._ao_opt_7 += _ao_n
++            return dict(encoding)
++        return encoding
+     
+     def _batch_encode(
+         self,

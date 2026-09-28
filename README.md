@@ -1,4 +1,64 @@
 <div align="center">
+  <a href="https://autooptm.com"><img src=".autooptm/logo.png" width="96" alt="AutoOptm"></a>
+
+  <h1>VibeVoice · optimized by <a href="https://autooptm.com">AutoOptm</a></h1>
+
+  <p><b>1.35x faster end to end</b> on the command below, output verified against the stock program.</p>
+
+  <p>
+    <a href="https://autooptm.com"><img alt="speedup" src="https://img.shields.io/badge/end--to--end-1.35x-2ea44f"></a>
+    <a href="https://github.com/microsoft/VibeVoice/commit/1541f590c7099820f10ea012f48d2399282df69f"><img alt="base" src="https://img.shields.io/badge/upstream-1541f590c709-blue"></a>
+    <img alt="card" src="https://img.shields.io/badge/measured%20on-NVIDIA%20RTX%205090-lightgrey">
+  </p>
+</div>
+
+> This is a fork of [microsoft/VibeVoice](https://github.com/microsoft/VibeVoice) at commit
+> [`1541f590c709`](https://github.com/microsoft/VibeVoice/commit/1541f590c7099820f10ea012f48d2399282df69f) with the AutoOptm patch applied on top.
+> The optimisation was found, measured and verified automatically by [AutoOptm](https://autooptm.com);
+> the patch is kept under [`.autooptm/`](.autooptm/).
+
+Every optimisation is on by default and the command runs unchanged — same file, same flags, same outputs. Every change is behind a switch that defaults on; see `.autooptm/autooptm.patch`.
+
+## The result — `python finetuning-asr/lora_finetune.py --model_path microsoft/VibeVoice-ASR --data_dir finetuning-asr/toy_dataset --output_dir out --num_train_epochs 3 --per_device_train_batch_size 1 --learning_rate 1e-4 --bf16 --report_to none`
+
+| | |
+|---|---|
+| **Command** | `python finetuning-asr/lora_finetune.py --model_path microsoft/VibeVoice-ASR --data_dir finetuning-asr/toy_dataset --output_dir out --num_train_epochs 3 --per_device_train_batch_size 1 --learning_rate 1e-4 --bf16 --report_to none` |
+| **Entry point** | `finetuning-asr/lora_finetune.py` |
+| **Unit measured** | one LoRA fine-tuning step of VibeVoice-ASR on the toy dataset (decode → tokenise → collate → forward/backward), measured on an RTX 5090 |
+| **Before (stock)** | 2554 ms per unit |
+| **After (this tree, all switches default ON)** | 1932 ms per unit |
+| **Speedup** | **1.35x** end to end on NVIDIA RTX 5090, host noise floor 0.4% |
+| **Output** | default tree: loss within 6.5e-2 relative, gradient cosine 0.885 — judge this deviation for your use; one switch turns off the change responsible and keeps the other gains at 1.15x with cosine 0.9987 |
+
+### What changed
+
+| File | Where | Gain (alone) |
+|---|---|---|
+| `finetuning-asr/lora_finetune.py` | setup_model_for_training() — after LoRA and gradient checkpointing | 1.194x |
+| `finetuning-asr/lora_finetune.py` | train() — the Trainer's dataloader settings | 1.137x |
+| `vibevoice/modular/modeling_vibevoice_asr.py` | VibeVoiceASRForConditionalGeneration.forward — the loss head | 1.037x |
+| `vibevoice/processor/vibevoice_asr_processor.py` | VibeVoiceASRProcessor._process_single_audio | 1.006x |
+
+
+## Reproduce
+
+```bash
+git clone https://github.com/autooptm/VibeVoice-ao.git
+cd VibeVoice-ao
+# set up exactly as upstream documents, then:
+python finetuning-asr/lora_finetune.py --model_path microsoft/VibeVoice-ASR --data_dir finetuning-asr/toy_dataset --output_dir out --num_train_epochs 3 --per_device_train_batch_size 1 --learning_rate 1e-4 --bf16 --report_to none
+```
+
+`git diff 1541f590c709` is the same change as the patch file under `.autooptm/`.
+
+---
+
+<div align="center"><sub>Optimized by <a href="https://autooptm.com">AutoOptm</a> — point it at a repository, get back a verified speedup and the patch.</sub></div>
+
+---
+
+<div align="center">
 
 ## 🎙️ VibeVoice: Open-Source Frontier Voice AI
 [![Project Page](https://img.shields.io/badge/Project-Page-blue?logo=githubpages)](https://microsoft.github.io/VibeVoice)

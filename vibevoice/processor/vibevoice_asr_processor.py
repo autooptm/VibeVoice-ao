@@ -296,6 +296,9 @@ class VibeVoiceASRProcessor:
         
         return batch_encoding
     
+    _ao_opt_6 = {}
+    _ao_opt_7 = 0
+
     def _process_single_audio(
         self,
         audio: Union[str, np.ndarray, torch.Tensor],
@@ -316,6 +319,15 @@ class VibeVoiceASRProcessor:
         Returns:
             Dictionary with processed tokens and audio features
         """
+        _ao_cap = int(os.environ.get("AO_OPT_4", "2048")) * 1024 * 1024
+        _ao_key = None
+        if _ao_cap > 0 and isinstance(audio, str):
+            _ao_key = (audio, sampling_rate, add_generation_prompt, use_streaming,
+                       context_info)
+            _ao_hit = VibeVoiceASRProcessor._ao_opt_6.get(_ao_key)
+            if _ao_hit is not None:
+                return dict(_ao_hit)
+
         # Process audio through audio processor
         if isinstance(audio, str):
             # Load from file using ffmpeg for better format support
@@ -410,12 +422,19 @@ class VibeVoiceASRProcessor:
         # Create acoustic input mask
         acoustic_input_mask = [1 if token == self.speech_pad_id else 0 for token in full_tokens]
         
-        return {
+        encoding = {
             "input_ids": full_tokens,
             "acoustic_input_mask": acoustic_input_mask,
             "speech": audio_array,
             "vae_tok_len": vae_tok_len,
         }
+        if _ao_key is not None:
+            _ao_n = int(getattr(audio_array, "nbytes", 0))
+            if VibeVoiceASRProcessor._ao_opt_7 + _ao_n <= _ao_cap:
+                VibeVoiceASRProcessor._ao_opt_6[_ao_key] = encoding
+                VibeVoiceASRProcessor._ao_opt_7 += _ao_n
+            return dict(encoding)
+        return encoding
     
     def _batch_encode(
         self,

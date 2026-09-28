@@ -1,5 +1,6 @@
 from typing import Callable, List, Optional, Tuple, Union
 import math
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -398,20 +399,26 @@ class VibeVoiceASRForConditionalGeneration(VibeVoiceASRPreTrainedModel, Generati
         )
 
         hidden_states = outputs[0] if not return_dict else outputs.last_hidden_state
-        logits = self.lm_head(hidden_states)
 
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
+            shift_labels = labels[..., 1:]
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            shift_logits = shift_logits.view(-1, self.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            if os.environ.get("AO_OPT_3", "0") == "1":
+                logits = self.lm_head(hidden_states)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = shift_labels.contiguous()
+                shift_logits = shift_logits.view(-1, self.vocab_size)
+                shift_labels = shift_labels.view(-1)
+                shift_labels = shift_labels.to(shift_logits.device)
+                loss = loss_fct(shift_logits, shift_labels)
+            else:
+                keep = shift_labels != -100
+                logits = self.lm_head(hidden_states[..., :-1, :][keep])
+                loss = loss_fct(logits.view(-1, self.vocab_size),
+                                shift_labels[keep].view(-1).to(logits.device))
+        else:
+            logits = self.lm_head(hidden_states)
 
         if not return_dict:
             output = (logits,) + outputs[1:]

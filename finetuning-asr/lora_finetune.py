@@ -8,6 +8,7 @@ It uses PEFT (Parameter-Efficient Fine-Tuning) library for efficient training.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -433,7 +434,16 @@ def setup_model_for_training(
     if gradient_checkpointing:
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable()
-    
+
+    if os.environ.get("AO_OPT_1", "1") == "1":
+        try:
+            from transformers.models.qwen2 import modeling_qwen2 as _ao_qwen2
+            _ao_qwen2.Qwen2DecoderLayer.forward = torch.compile(
+                _ao_qwen2.Qwen2DecoderLayer.forward)
+            logger.info("[autooptm] optimized Qwen2DecoderLayer.forward")
+        except Exception as exc:
+            logger.warning(f"[autooptm] block optimization unavailable, using the stock path: {exc}")
+
     return model, processor
 
 
@@ -497,7 +507,11 @@ def train(
     )
     
     # Set some sensible defaults for audio training
-    training_args.dataloader_num_workers = 0  # Audio loading can be tricky with multiprocessing
+    _ao_opt_5 = int(os.environ.get("AO_OPT_2", "2"))
+    training_args.dataloader_num_workers = _ao_opt_5
+    if _ao_opt_5 > 0:
+        training_args.dataloader_prefetch_factor = 2
+        training_args.dataloader_persistent_workers = True
     training_args.remove_unused_columns = False  # Keep all columns
     
     # Create trainer
